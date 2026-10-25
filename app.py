@@ -11,13 +11,37 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 from google import genai
+from pymongo import MongoClient
 
 # =========================================================
-# LOAD ENVIRONMENT VARIABLES & SETUP GEMINI CLIENT
+# LOAD ENVIRONMENT VARIABLES & SETUP CLIENTS
 # =========================================================
 
 load_dotenv()
-api_key = os.getenv("GEMINI_API_KEY")
+
+load_dotenv()
+
+# Safely check st.secrets for cloud deployment, fallback to .env for local testing
+api_key = None
+mongo_uri = None
+
+try:
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+except Exception:
+    pass
+
+if not api_key:
+    api_key = os.getenv("GEMINI_API_KEY")
+
+try:
+    if "MONGO_URI" in st.secrets:
+        mongo_uri = st.secrets["MONGO_URI"]
+except Exception:
+    pass
+
+if not mongo_uri:
+    mongo_uri = os.getenv("MONGO_URI")
 
 client = None
 if api_key:
@@ -26,6 +50,19 @@ if api_key:
     except Exception as e:
         print(f"Error initializing Gemini client: {e}")
 
+# Initialize MongoDB Client & Collections
+db_client = None
+users_col = None
+datasets_col = None
+
+if mongo_uri:
+    try:
+        db_client = MongoClient(mongo_uri)
+        db = db_client["datasense_cloud_db"]
+        users_col = db["users"]
+        datasets_col = db["datasets"]
+    except Exception as e:
+        print(f"Error connecting to MongoDB: {e}")
 
 # =========================================================
 # PAGE CONFIGURATION
@@ -82,11 +119,6 @@ h1, h2, h3 {
 
 [data-testid="stSidebar"] * {
     color: #f4f4f5 !important;
-}
-
-[data-testid="stSidebar"] .stCaption, 
-[data-testid="stSidebar"] small {
-    color: #a1a1aa !important;
 }
 
 [data-testid="stSidebar"] .stButton button {
@@ -307,9 +339,6 @@ input, textarea, select {
     color: #ffffff !important;
 }
 
-/* =========================================================
-   SIDE ORBITAL RADAR STYLING
-   ======================================================== */
 @keyframes spinClockwise {
     0% { transform: translate(-50%, -50%) rotate(0deg); }
     100% { transform: translate(-50%, -50%) rotate(360deg); }
@@ -364,43 +393,62 @@ input, textarea, select {
 
 
 # =========================================================
-# PERSISTENT STORAGE FUNCTIONS (JSON FILE BACKED)
+# CLOUD DATABASE HELPER FUNCTIONS (MONGODB ATLAS)
 # =========================================================
 
-HISTORY_FILE = "datasense_history.json"
-USERS_FILE = "users.json"
-
-def load_histories_from_disk():
-    if os.path.exists(HISTORY_FILE):
+def get_user_from_db(email):
+    if users_col is not None:
         try:
-            with open(HISTORY_FILE, "r") as f:
-                return json.load(f)
+            return users_col.find_one({"email": email})
         except Exception:
-            return {}
-    return {}
+            return None
+    return None
 
-def save_histories_to_disk(histories):
-    try:
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(histories, f, indent=4)
-    except Exception as e:
-        print(f"Error saving history: {e}")
-
-def load_users_from_disk():
-    if os.path.exists(USERS_FILE):
+def save_user_to_db(email, password):
+    if users_col is not None:
         try:
-            with open(USERS_FILE, "r") as f:
-                return json.load(f)
+            users_col.insert_one({"email": email, "password": password, "history": []})
+            return True
         except Exception:
-            return {}
-    return {}
+            return False
+    return False
 
-def save_users_to_disk(users):
-    try:
-        with open(USERS_FILE, "w") as f:
-            json.dump(users, f, indent=4)
-    except Exception as e:
-        print(f"Error saving users: {e}")
+def get_user_history_from_db(email):
+    user = get_user_from_db(email)
+    if user and "history" in user:
+        return user["history"] # returns list of filename strings
+    return []
+
+def add_history_to_db(email, filename):
+    if users_col is not None:
+        try:
+            users_col.update_one(
+                {"email": email},
+                {"$addToSet": {"history": filename}}
+            )
+        except Exception as e:
+            print(f"Error updating history: {e}")
+
+def save_dataset_bytes_to_db(email, filename, file_bytes):
+    if datasets_col is not None:
+        try:
+            datasets_col.update_one(
+                {"email": email, "filename": filename},
+                {"$set": {"file_bytes": file_bytes, "updated_at": datetime.utcnow()}},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"Error saving dataset bytes: {e}")
+
+def load_dataset_bytes_from_db(email, filename):
+    if datasets_col is not None:
+        try:
+            record = datasets_col.find_one({"email": email, "filename": filename})
+            if record and "file_bytes" in record:
+                return record["file_bytes"]
+        except Exception as e:
+            print(f"Error loading dataset bytes: {e}")
+    return None
 
 
 # =========================================================
@@ -411,10 +459,6 @@ if "ds_signed_in" not in st.session_state:
     st.session_state["ds_signed_in"] = False
 if "ds_user" not in st.session_state:
     st.session_state["ds_user"] = ""
-if "ds_user_histories" not in st.session_state:
-    st.session_state["ds_user_histories"] = load_histories_from_disk()
-if "ds_reset_upload" not in st.session_state:
-    st.session_state["ds_reset_upload"] = False
 if "ds_selected_history_file" not in st.session_state:
     st.session_state["ds_selected_history_file"] = None
 if "auth_mode" not in st.session_state:
@@ -425,34 +469,29 @@ if "auth_mode" not in st.session_state:
 # AGENT UTILITIES & GEMINI AI QUESTION HANDLER
 # =========================================================
 
-def read_dataset(file_obj_or_path):
-    if isinstance(file_obj_or_path, str):
-        name = file_obj_or_path.lower()
-        if name.endswith(".csv"):
-            try:
-                return pd.read_csv(file_obj_or_path, sep=None, engine='python')
-            except Exception:
-                try:
-                    return pd.read_csv(file_obj_or_path)
-                except UnicodeDecodeError:
-                    return pd.read_csv(file_obj_or_path, encoding="latin-1")
-        if name.endswith((".xlsx", ".xls")):
-            return pd.read_excel(file_obj_or_path)
+def read_dataset_from_source(file_obj_or_bytes, filename):
+    name = filename.lower()
+    if isinstance(file_obj_or_bytes, bytes):
+        buffer = io.BytesIO(file_obj_or_bytes)
     else:
-        name = file_obj_or_path.name.lower()
-        if name.endswith(".csv"):
+        buffer = file_obj_or_bytes
+
+    if name.endswith(".csv"):
+        try:
+            buffer.seek(0)
+            return pd.read_csv(buffer, sep=None, engine='python')
+        except Exception:
             try:
-                return pd.read_csv(file_obj_or_path, sep=None, engine='python')
-            except Exception:
-                try:
-                    file_obj_or_path.seek(0)
-                    return pd.read_csv(file_obj_or_path)
-                except UnicodeDecodeError:
-                    file_obj_or_path.seek(0)
-                    return pd.read_csv(file_obj_or_path, encoding="latin-1")
-        if name.endswith((".xlsx", ".xls")):
-            return pd.read_excel(file_obj_or_path)
-    raise ValueError("Please upload or select a valid CSV or Excel file.")
+                buffer.seek(0)
+                return pd.read_csv(buffer)
+            except UnicodeDecodeError:
+                buffer.seek(0)
+                return pd.read_csv(buffer, encoding="latin-1")
+    if name.endswith((".xlsx", ".xls")):
+        buffer.seek(0)
+        return pd.read_excel(buffer)
+    
+    raise ValueError("Please upload a valid CSV or Excel file.")
 
 def safe_name(name):
     return str(name).replace("`", "").replace("'", "").replace('"', "")
@@ -507,7 +546,7 @@ def answer_question(df, question):
         return "Ask a question about the uploaded dataset."
     
     if not client:
-        return "⚠️ Gemini API client is not configured. Please check that your `.env` file contains a valid `GEMINI_API_KEY`."
+        return "⚠️ Gemini API client is not configured. Please check that your secrets contain a valid `GEMINI_API_KEY`."
 
     df_summary = f"""
     Dataset Shape: {df.shape[0]} rows, {df.shape[1]} columns
@@ -555,16 +594,13 @@ def answer_question(df, question):
 
 logo_svg = """
 <svg width="40" height="40" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Pixels on top left -->
   <rect x="10" y="10" width="12" height="12" rx="3" fill="#3b82f6"/>
   <rect x="25" y="15" width="10" height="10" rx="2" fill="#60a5fa"/>
   <rect x="15" y="27" width="11" height="11" rx="2" fill="#2563eb"/>
   <rect x="30" y="29" width="12" height="12" rx="3" fill="#93c5fd"/>
   <rect x="8" y="42" width="10" height="10" rx="2" fill="#1d4ed8"/>
-  <!-- Main letter D body -->
   <path d="M22 38H45C65 38 78 51 78 71C78 91 65 104 45 104H22V38Z" fill="url(#paint0_linear)"/>
   <path d="M38 53V89H46C56 89 62 83 62 71C62 59 56 53 46 53H38Z" fill="#ffffff"/>
-  <!-- Analytics bar charts inside D -->
   <rect x="42" y="68" width="6" height="14" rx="2" fill="#3b82f6"/>
   <rect x="51" y="60" width="6" height="22" rx="2" fill="#2563eb"/>
   <defs>
@@ -619,7 +655,7 @@ if st.session_state["ds_signed_in"]:
         st.markdown("### 🕒 Explored Datasets History")
         
         current_user = st.session_state["ds_user"]
-        user_history = st.session_state["ds_user_histories"].get(current_user, [])
+        user_history = get_user_history_from_db(current_user)
         
         if user_history:
             for item in user_history[-5:]:
@@ -639,7 +675,7 @@ if st.session_state["ds_signed_in"]:
             </div>
             <div style="overflow:hidden;">
                 <div style="font-size:13px; font-weight:700; color:#e3e3e3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{current_user}</div>
-                <div style="font-size:11px; color:#a8c7fa; font-weight:600;">DataSense</div>
+                <div style="font-size:11px; color:#a8c7fa; font-weight:600;">DataSense Cloud</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -653,7 +689,7 @@ if st.session_state["ds_signed_in"]:
 
 
 # =========================================================
-# AUTH GATE WITH 4 RINGS & 4 ICONS PER SIDE
+# AUTH GATE WITH CLOUD SYNC
 # =========================================================
 
 if not st.session_state["ds_signed_in"]:
@@ -662,9 +698,9 @@ if not st.session_state["ds_signed_in"]:
     with left_col:
         st.markdown("""
         <div class="agent-side-panel">
-            <div class="agent-badge">🔍 SMART DIAGNOSTICS</div>
+            <div class="agent-badge">🔍 CLOUD DIAGNOSTICS</div>
             <div class="agent-title">Data Quality & Health</div>
-            <div class="agent-desc">Automatically inspect missing values, complete completeness ratios, and detect duplicate observation rows instantly.</div>
+            <div class="agent-desc">Inspect missing values, completeness ratios, and detect duplicate rows instantly with secure cloud persistence.</div>
             <div class="pulse-node-container">
                 <div class="p-node"></div>
                 <div class="p-node" style="animation-delay: 0.4s;"></div>
@@ -673,7 +709,6 @@ if not st.session_state["ds_signed_in"]:
         </div>
         """, unsafe_allow_html=True)
         
-        # BOTTOM LEFT ORBITAL RADAR (4 RINGS, 4 ICONS)
         st.markdown("""
         <div class="side-radar-box">
             <div class="side-eco-ring"><div class="side-eco-bubble" style="top: -15px; left: 25px;">📗</div></div>
@@ -686,9 +721,9 @@ if not st.session_state["ds_signed_in"]:
     with right_col:
         st.markdown("""
         <div class="agent-side-panel">
-            <div class="agent-badge">💬 DATASET CHAT AGENT</div>
+            <div class="agent-badge">💬 CLOUD CHAT AGENT</div>
             <div class="agent-title">Conversational AI</div>
-            <div class="agent-desc">Ask complex questions about your numerical features, outliers, or summary trends and get precise answers from Gemini.</div>
+            <div class="agent-desc">Ask complex questions about your numerical features, trends, or outliers and get precise insights from Gemini.</div>
             <div class="pulse-node-container">
                 <div class="p-node" style="animation-delay: 0.2s;"></div>
                 <div class="p-node" style="animation-delay: 0.6s;"></div>
@@ -697,7 +732,6 @@ if not st.session_state["ds_signed_in"]:
         </div>
         """, unsafe_allow_html=True)
         
-        # BOTTOM RIGHT ORBITAL RADAR (4 RINGS, 4 ICONS)
         st.markdown("""
         <div class="side-radar-box">
             <div class="side-eco-ring"><div class="side-eco-bubble" style="bottom: -15px; left: 30px;">📈</div></div>
@@ -714,7 +748,7 @@ if not st.session_state["ds_signed_in"]:
             <div class="ds-eyebrow">YOUR PERSONAL DATA INTELLIGENCE AGENT</div>
             <div class="ds-title" style="font-size: 28px; margin-top:6px;">Welcome to DataSense AI</div>
             <div class="ds-sub" style="margin: 0 auto; text-align: center; font-size: 14px; color:#94a3b8;">
-                Drop your raw datasets and watch your intelligent agent transform them into deep insights and clean charts.
+                Drop your raw datasets and watch your cloud-backed intelligent agent transform them into deep insights.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -740,35 +774,36 @@ if not st.session_state["ds_signed_in"]:
             
             if form_submitted:
                 clean_e = email_val.strip().lower()
-                users_db = load_users_from_disk()
                 if not clean_e or not pass_val:
                     st.error("Please enter both email and password.")
                 elif is_signup:
-                    if clean_e in users_db:
+                    existing = get_user_from_db(clean_e)
+                    if existing:
                         st.warning("Account already exists! Please switch to 'Existing User (Sign In)'.")
                     else:
-                        users_db[clean_e] = pass_val
-                        save_users_to_disk(users_db)
-                        st.session_state["ds_signed_in"] = True
-                        st.session_state["ds_user"] = clean_e
-                        st.session_state["ds_user_histories"] = load_histories_from_disk()
-                        st.success("Account created successfully! Logging you in...")
-                        st.rerun()
-                else:
-                    if clean_e in users_db:
-                        if users_db[clean_e] == pass_val:
+                        success = save_user_to_db(clean_e, pass_val)
+                        if success:
                             st.session_state["ds_signed_in"] = True
                             st.session_state["ds_user"] = clean_e
-                            st.session_state["ds_user_histories"] = load_histories_from_disk()
+                            st.success("Account created successfully in MongoDB! Logging you in...")
+                            st.rerun()
+                        else:
+                            st.error("Database error while creating account. Please check connection.")
+                else:
+                    user_record = get_user_from_db(clean_e)
+                    if user_record:
+                        if user_record.get("password") == pass_val:
+                            st.session_state["ds_signed_in"] = True
+                            st.session_state["ds_user"] = clean_e
                             st.rerun()
                         else:
                             st.error("Incorrect password. Please try again.")
                     else:
-                        st.error("Account not found! You are a new user. Please click 'Create Account (Sign Up)' above first.")
+                        st.error("Account not found! Please click 'Create Account (Sign Up)' above first.")
 
         st.markdown("""
             <div style="text-align:center; margin-top: 14px; font-size: 12px; color: #a1a1aa;">
-                Protected by DataSense secure session manager.
+                Protected by DataSense MongoDB Cloud Sync.
             </div>
         """, unsafe_allow_html=True)
     st.stop()
@@ -780,18 +815,18 @@ if not st.session_state["ds_signed_in"]:
 
 st.markdown(f"""
 <div class="ds-hero">
-  <div class="ds-eyebrow">YOUR PERSONAL DATA AGENT</div>
+  <div class="ds-eyebrow">YOUR PERSONAL CLOUD DATA AGENT</div>
   <div class="ds-title" style="display:flex; align-items:center; gap:12px;">
     <div style="background:#ffffff; width:48px; height:48px; border-radius:50%; display:flex; align-items:center; justify-content:center; padding:3px; border:2px solid rgba(59,130,246,0.8);">{logo_svg}</div>
     <span>DataSense AI</span>
   </div>
   <div class="ds-sub">
-    Hey there! Drop your dataset and let’s uncover the story inside. I’ll scan data quality, map patterns, build visuals, and turn numbers into clear takeaways.
+    Hey there! Drop your dataset and let’s uncover the story inside. Your files and history are securely synced to the cloud.
   </div>
   <div style="margin-top:12px">
     <span class="ds-pill">⌁ Smart profiling</span>
     <span class="ds-pill">▥ Auto charts</span>
-    <span class="ds-pill">✧ Insight engine</span>
+    <span class="ds-pill">✧ Cloud history</span>
     <span class="ds-pill">⌕ Ask your data</span>
   </div>
 </div>
@@ -799,21 +834,29 @@ st.markdown(f"""
 
 
 # =========================================================
-# DATASET SELECTION (FILE UPLOADER OR HISTORY CLICK)
+# DATASET SELECTION (UPLOAD OR CLOUD HISTORY)
 # =========================================================
 
 active_user = st.session_state["ds_user"]
-if active_user not in st.session_state["ds_user_histories"]:
-    st.session_state["ds_user_histories"][active_user] = []
-
 selected_history = st.session_state.get("ds_selected_history_file")
 
-if selected_history and os.path.exists(selected_history):
-    st.info(f"📁 Loaded dataset from history: **{selected_history}**")
+active_source_bytes = None
+active_source_name = None
+
+if selected_history:
+    st.info(f"📁 Loaded dataset from cloud history: **{selected_history}**")
     if st.button("← Upload a different file instead"):
         st.session_state["ds_selected_history_file"] = None
         st.rerun()
-    active_source = selected_history
+    
+    file_bytes = load_dataset_bytes_from_db(active_user, selected_history)
+    if file_bytes:
+        active_source_bytes = file_bytes
+        active_source_name = selected_history
+    else:
+        st.error("Could not retrieve dataset bytes from MongoDB. Please re-upload.")
+        st.session_state["ds_selected_history_file"] = None
+        st.rerun()
 else:
     uploaded_files = st.file_uploader("Choose CSV or Excel dataset", type=["csv", "xlsx", "xls"], accept_multiple_files=True, key="main_file_uploader")
     
@@ -823,21 +866,21 @@ else:
             st.markdown("""
             <div class="ds-card">
               <div class="ds-card-title">START HERE</div>
-              <h3 style="margin-top:8px">Give your data a little spotlight.</h3>
-              <p style="color:#94a3b8">Upload one or multiple CSV/Excel files using the panel above. The agent will profile them and prepare a complete dashboard automatically.</p>
-              <div class="ds-note">🧩 Bring any datasets you’re curious about — from business and health tables to research or academic projects.</div>
+              <h3 style="margin-top:8px">Give your data a cloud spotlight.</h3>
+              <p style="color:#94a3b8">Upload any dataset. The agent automatically saves it to your cloud history so you can reload it anytime from any device.</p>
+              <div class="ds-note">🧩 Bring any datasets you’re curious about — from business tables to research projects.</div>
             </div>
             """, unsafe_allow_html=True)
         with right:
             st.markdown("""
             <div class="ds-card">
-              <div class="ds-card-title">AGENT WORKFLOW</div>
+              <div class="ds-card-title">CLOUD WORKFLOW</div>
               <h3 style="margin-top:8px">A guided path from data to discovery</h3>
               
               <div class="ds-workflow-flow">
                 <div class="ds-wf-box">📥<b>1. Upload</b></div>
                 <div class="ds-wf-arrow">→</div>
-                <div class="ds-wf-box">🔎<b>2. Scan</b></div>
+                <div class="ds-wf-box">☁️<b>2. Sync</b></div>
                 <div class="ds-wf-arrow">→</div>
                 <div class="ds-wf-box">⚙️<b>3. Quality</b></div>
                 <div class="ds-wf-arrow">→</div>
@@ -846,26 +889,27 @@ else:
                 <div class="ds-wf-box">💡<b>5. Insights</b></div>
               </div>
 
-              <div class="ds-good" style="margin-top: 12px;">💡 Your data. Clearer decisions.</div>
+              <div class="ds-good" style="margin-top: 12px;">💡 Your data. Securely stored in the cloud.</div>
             </div>
             """, unsafe_allow_html=True)
         st.stop()
 
-    for file in uploaded_files:
-        if file.name not in st.session_state["ds_user_histories"][active_user]:
-            st.session_state["ds_user_histories"][active_user].append(file.name)
-            save_histories_to_disk(st.session_state["ds_user_histories"])
-
     if len(uploaded_files) > 1:
         selected_file_name = st.selectbox("Select active dataset to analyze:", [f.name for f in uploaded_files])
-        active_source = next(f for f in uploaded_files if f.name == selected_file_name)
+        active_file = next(f for f in uploaded_files if f.name == selected_file_name)
     else:
-        active_source = uploaded_files[0]
+        active_file = uploaded_files[0]
+
+    active_source_name = active_file.name
+    active_source_bytes = active_file.getvalue()
+
+    # Save automatically to MongoDB Atlas cloud history
+    add_history_to_db(active_user, active_source_name)
+    save_dataset_bytes_to_db(active_user, active_source_name, active_source_bytes)
 
 try:
-    source_name = active_source if isinstance(active_source, str) else active_source.name
-    with st.spinner(f"✦ Agent is scanning {source_name}..."):
-        df = read_dataset(active_source)
+    with st.spinner(f"✦ Agent is scanning {active_source_name}..."):
+        df = read_dataset_from_source(active_source_bytes, active_source_name)
 except Exception as exc:
     st.error(f"Couldn't read this file: {exc}")
     st.stop()
@@ -875,7 +919,7 @@ if df.empty:
     st.stop()
 
 profile = profile_data(df)
-st.success(f"Scan complete for **{source_name}** — Explored {profile['rows']:,} rows across {profile['cols']:,} columns.")
+st.success(f"Scan complete for **{active_source_name}** — Explored {profile['rows']:,} rows across {profile['cols']:,} columns.")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("🧾 Total rows", f"{profile['rows']:,}")
@@ -1014,9 +1058,8 @@ with tab_agent:
     st.subheader("💬 Ask your dataset")
     st.markdown("<div class='ds-note'>Hey! I'm DataSense, powered by Gemini AI. Ask me anything about your dataset — rows, patterns, student scores, or outliers!</div>", unsafe_allow_html=True)
     
-    question = st.text_input("Your question", key="ds_question", placeholder="e.g. Does there is an outlier in SQL marks?")
+    question = st.text_input("Your question", key="ds_question", placeholder="e.g. What are the main trends in this dataset?")
     
-    # POPULAR EXAMPLE QUESTIONS SUGGESTION BOX
     st.markdown("""
     <div style="margin-top: 8px; margin-bottom: 12px; font-size: 13px; color: #94a3b8;">
         <b>💡 Popular example questions you can ask:</b>
