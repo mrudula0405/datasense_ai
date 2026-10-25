@@ -19,29 +19,18 @@ from pymongo import MongoClient
 
 load_dotenv()
 
-load_dotenv()
-
-# Safely check st.secrets for cloud deployment, fallback to .env for local testing
-api_key = None
-mongo_uri = None
+# Safely load API key and Mongo URI without triggering local StreamlitSecretNotFoundError
+api_key = os.getenv("GEMINI_API_KEY")
+mongo_uri = os.getenv("MONGO_URI")
 
 try:
-    if "GEMINI_API_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_API_KEY"]
+    if st.secrets:
+        if "GEMINI_API_KEY" in st.secrets:
+            api_key = st.secrets["GEMINI_API_KEY"]
+        if "MONGO_URI" in st.secrets:
+            mongo_uri = st.secrets["MONGO_URI"]
 except Exception:
     pass
-
-if not api_key:
-    api_key = os.getenv("GEMINI_API_KEY")
-
-try:
-    if "MONGO_URI" in st.secrets:
-        mongo_uri = st.secrets["MONGO_URI"]
-except Exception:
-    pass
-
-if not mongo_uri:
-    mongo_uri = os.getenv("MONGO_URI")
 
 client = None
 if api_key:
@@ -49,6 +38,20 @@ if api_key:
         client = genai.Client(api_key=api_key)
     except Exception as e:
         print(f"Error initializing Gemini client: {e}")
+
+# Initialize MongoDB Client & Collections
+db_client = None
+users_col = None
+datasets_col = None
+
+if mongo_uri:
+    try:
+        db_client = MongoClient(mongo_uri)
+        db = db_client["datasense_cloud_db"]
+        users_col = db["users"]
+        datasets_col = db["datasets"]
+    except Exception as e:
+        print(f"Error connecting to MongoDB: {e}")
 
 # Initialize MongoDB Client & Collections
 db_client = None
