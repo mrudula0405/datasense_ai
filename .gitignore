@@ -1,0 +1,4 @@
+.env
+datasense_history.json
+users.json
+__pycache__/

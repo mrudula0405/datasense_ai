@@ -1,0 +1,16 @@
+OrderID,CustomerName,Region,ProductCategory,UnitsSold,UnitPrice,Discount,OrderDate,DeliveryStatus
+1001,Aarav Sharma,North,Electronics,5,1200.0,0.1,2026-01-10,Delivered
+1002,Priya Patel,West,Clothing,12,45.0,0.0,2026-01-11,Delivered
+1003,Rohan Gupta,South,Home Appliances,2,850.0,0.15,2026-01-12,Pending
+1004,Ananya Singh,East,Electronics,8,1200.0,0.1,2026-01-13,Delivered
+1005,Vikram Malhotra,North,Clothing,,45.0,0.0,2026-01-14,Shipped
+1006,Neha Verma,South,Furniture,4,550.0,0.05,2026-01-15,Delivered
+1007,Kabir Das,West,Electronics,15,300.0,0.2,2026-01-16,Cancelled
+1008,Pooja Nair,East,Home Appliances,1,850.0,0.0,2026-01-17,Delivered
+1009,Rahul Sen,North,Furniture,6,550.0,0.05,2026-01-18,Delivered
+1010,Sneha Iyer,South,Clothing,20,25.0,0.0,2026-01-19,Delivered
+1011,Amit Joshi,West,Electronics,3,2500.0,0.25,2026-01-20,Shipped
+1012,Divya Rao,East,Home Appliances,4,450.0,0.1,2026-01-21,Delivered
+1003,Rohan Gupta,South,Home Appliances,2,850.0,0.15,2026-01-12,Pending
+1014,Karan Mehta,North,Electronics,25,1200.0,0.3,2026-01-22,Delivered
+1015,Meera Joshi,West,Clothing,8,60.0,0.0,2026-01-23,Delivered
