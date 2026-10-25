@@ -430,19 +430,26 @@ def read_dataset(file_obj_or_path):
         name = file_obj_or_path.lower()
         if name.endswith(".csv"):
             try:
-                return pd.read_csv(file_obj_or_path)
-            except UnicodeDecodeError:
-                return pd.read_csv(file_obj_or_path, encoding="latin-1")
+                return pd.read_csv(file_obj_or_path, sep=None, engine='python')
+            except Exception:
+                try:
+                    return pd.read_csv(file_obj_or_path)
+                except UnicodeDecodeError:
+                    return pd.read_csv(file_obj_or_path, encoding="latin-1")
         if name.endswith((".xlsx", ".xls")):
             return pd.read_excel(file_obj_or_path)
     else:
         name = file_obj_or_path.name.lower()
         if name.endswith(".csv"):
             try:
-                return pd.read_csv(file_obj_or_path)
-            except UnicodeDecodeError:
-                file_obj_or_path.seek(0)
-                return pd.read_csv(file_obj_or_path, encoding="latin-1")
+                return pd.read_csv(file_obj_or_path, sep=None, engine='python')
+            except Exception:
+                try:
+                    file_obj_or_path.seek(0)
+                    return pd.read_csv(file_obj_or_path)
+                except UnicodeDecodeError:
+                    file_obj_or_path.seek(0)
+                    return pd.read_csv(file_obj_or_path, encoding="latin-1")
         if name.endswith((".xlsx", ".xls")):
             return pd.read_excel(file_obj_or_path)
     raise ValueError("Please upload or select a valid CSV or Excel file.")
