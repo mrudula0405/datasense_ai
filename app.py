@@ -42,7 +42,6 @@ try:
 except Exception:
     pass
 
-# Robust client initialization
 client = None
 if api_key:
     try:
@@ -587,11 +586,9 @@ def answer_question(df, question):
             )
             if response and response.text:
                 return response.text
-        except Exception as e:
-            # Let's print or capture the exact error in debug text if API fails
+        except Exception:
             pass
 
-    # Fallback to smart calculated answers if client is missing or API fails
     if "summary" in q or "statistic" in q or "numerical" in q:
         return f"### 📈 Statistical Summary:\n{df.describe().to_markdown()}"
     if "missing" in q or "null" in q:
@@ -699,7 +696,7 @@ if st.session_state["ds_signed_in"]:
             </div>
             <div style="overflow:hidden;">
                 <div style="font-size:13px; font-weight:700; color:#e3e3e3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{current_user}</div>
-                <div style="font-size:11px; color:#a8c7fa; font-weight:600;">DataSense Cloud</div>
+                <div style="font-size:11px; color:#a8c7fa; font-weight:600;">DataSense</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
