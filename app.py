@@ -53,19 +53,6 @@ if mongo_uri:
     except Exception as e:
         print(f"Error connecting to MongoDB: {e}")
 
-# Initialize MongoDB Client & Collections
-db_client = None
-users_col = None
-datasets_col = None
-
-if mongo_uri:
-    try:
-        db_client = MongoClient(mongo_uri)
-        db = db_client["datasense_cloud_db"]
-        users_col = db["users"]
-        datasets_col = db["datasets"]
-    except Exception as e:
-        print(f"Error connecting to MongoDB: {e}")
 
 # =========================================================
 # PAGE CONFIGURATION
@@ -198,7 +185,6 @@ h1, h2, h3 {
     background-color: #ec4899;
     border-radius: 50%;
     box-shadow: 0 0 8px #ec4899;
-    animation: agentPulse 2s infinite;
 }
 
 .ds-hero {
@@ -398,7 +384,6 @@ input, textarea, select {
 # =========================================================
 # CLOUD DATABASE HELPER FUNCTIONS (MONGODB ATLAS)
 # =========================================================
-
 def get_user_from_db(email):
     if users_col is not None:
         try:
@@ -419,7 +404,7 @@ def save_user_to_db(email, password):
 def get_user_history_from_db(email):
     user = get_user_from_db(email)
     if user and "history" in user:
-        return user["history"] # returns list of filename strings
+        return user["history"]
     return []
 
 def add_history_to_db(email, filename):
@@ -551,7 +536,6 @@ def answer_question(df, question):
     if not client:
         return "⚠️ Gemini API client is not configured. Please check your API key."
 
-    # Send a lightweight summary instead of the full raw text to prevent token limit errors
     df_summary = f"""
     Dataset Overview:
     - Rows: {df.shape[0]}
@@ -579,7 +563,8 @@ def answer_question(df, question):
         )
         return response.text
     except Exception as e:
-        return f"💡 **Quick Insight:** Based on your dataset of {df.shape[0]} rows, the features include {list(df.columns)[:5]}. (Note: API limit reached, but your data pipeline and database connection are fully operational!)"
+        return f"⚠️ Error communicating with Gemini API: {e}"
+
 
 # =========================================================
 # LOGO DEFINITION
@@ -797,8 +782,7 @@ if not st.session_state["ds_signed_in"]:
         st.markdown("""
             <div style="text-align:center; margin-top: 14px; font-size: 12px; color: #a1a1aa;">
                 Protected by DataSense MongoDB Cloud Sync.
-            </div>
-        """, unsafe_allow_html=True)
+            </div>   """, unsafe_allow_html=True)
     st.stop()
 
 
@@ -896,7 +880,6 @@ else:
     active_source_name = active_file.name
     active_source_bytes = active_file.getvalue()
 
-    # Save automatically to MongoDB Atlas cloud history
     add_history_to_db(active_user, active_source_name)
     save_dataset_bytes_to_db(active_user, active_source_name, active_source_bytes)
 
@@ -919,6 +902,7 @@ m1.metric("🧾 Total rows", f"{profile['rows']:,}")
 m2.metric("▦ Total columns", f"{profile['cols']:,}")
 m3.metric("🩺 Missing cells", f"{profile['missing_cells']:,}", f"{profile['missing_pct']}% of all cells")
 m4.metric("⧉ Duplicate rows", f"{profile['duplicates']:,}")
+
 
 # =========================================================
 # TABS SETUP
